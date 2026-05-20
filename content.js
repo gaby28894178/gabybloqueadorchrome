@@ -1,111 +1,158 @@
-// Content script para saltar anuncios de video en YouTube
+// Content script para saltar/neutralizar anuncios de YouTube
 (function() {
   'use strict';
 
   const ICON_URL = chrome.runtime.getURL('icono.png');
   let overlay = null;
-  let isProcessing = false;
+  let overlayTimer = null;
 
-  function showOverlay() {
-    if (overlay) return;
-    const playerContainer = document.querySelector('#movie_player');
-    if (!playerContainer) return;
+  // =============================================
+  // MÉTODO 1: Interceptar las respuestas de YouTube
+  // Modificamos el fetch y XMLHttpRequest para limpiar
+  // los datos de anuncios antes de que el player los use
+  // =============================================
 
+  // Interceptar fetch
+  const originalFetch = window.fetch;
+  window.fetch = async function(...args) {
+    const response = await originalFetch.apply(this, args);
+    const url = (args[0] instanceof Request) ? args[0].url : args[0];
+
+    // Interceptar las respuestas del player que contienen info de ads
+    if (typeof url === 'string' && url.includes('/youtubei/v1/player')) {
+      const clone = response.clone();
+      try {
+        const json = await clone.json();
+        // Eliminar datos de anuncios del JSON
+        if (json.adPlacements) delete json.adPlacements;
+        if (json.adSlots) delete json.adSlots;
+        if (json.playerAds) delete json.playerAds;
+        if (json.adBreakParams) delete json.adBreakParams;
+
+        // Crear nueva respuesta sin los ads
+        return new Response(JSON.stringify(json), {
+          status: response.status,
+          statusText: response.statusText,
+          headers: response.headers
+        });
+      } catch(e) {
+        return response;
+      }
+    }
+    return response;
+  };
+
+  // Interceptar XMLHttpRequest
+  const originalXHROpen = XMLHttpRequest.prototype.open;
+  const originalXHRSend = XMLHttpRequest.prototype.send;
+
+  XMLHttpRequest.prototype.open = function(method, url, ...rest) {
+    this._url = url;
+    return originalXHROpen.apply(this, [method, url, ...rest]);
+  };
+
+  XMLHttpRequest.prototype.send = function(...args) {
+    if (this._url && this._url.includes('/youtubei/v1/player')) {
+      this.addEventListener('readystatechange', function() {
+        if (this.readyState === 4) {
+          try {
+            const json = JSON.parse(this.responseText);
+            if (json.adPlacements) delete json.adPlacements;
+            if (json.adSlots) delete json.adSlots;
+            if (json.playerAds) delete json.playerAds;
+            if (json.adBreakParams) delete json.adBreakParams;
+
+            Object.defineProperty(this, 'responseText', {
+              value: JSON.stringify(json),
+              writable: false
+            });
+            Object.defineProperty(this, 'response', {
+              value: JSON.stringify(json),
+              writable: false
+            });
+          } catch(e) {}
+        }
+      });
+    }
+    return originalXHRSend.apply(this, args);
+  };
+
+  // =============================================
+  // MÉTODO 2: Backup - Skip visual para ads que pasen
+  // =============================================
+
+  function showOverlay(msg) {
+    if (overlay) {
+      var s = overlay.querySelector('span');
+      if (s) s.textContent = msg;
+      return;
+    }
+    var player = document.querySelector('#movie_player');
+    if (!player) return;
     overlay = document.createElement('div');
     overlay.id = 'blocker-overlay';
-    overlay.innerHTML = `
-      <img src="${ICON_URL}" alt="Bloqueando anuncio">
-      <span>Saltando anuncio...</span>
-    `;
-    playerContainer.style.position = 'relative';
-    playerContainer.appendChild(overlay);
+    overlay.innerHTML = '<img src="' + ICON_URL + '"><span>' + (msg || 'Saltando anuncio...') + '</span>';
+    player.appendChild(overlay);
+    clearTimeout(overlayTimer);
+    overlayTimer = setTimeout(hideOverlay, 5000);
   }
 
   function hideOverlay() {
-    if (overlay) {
-      overlay.remove();
-      overlay = null;
-    }
+    clearTimeout(overlayTimer);
+    if (overlay) { overlay.remove(); overlay = null; }
+    document.querySelectorAll('#blocker-overlay').forEach(function(el) { el.remove(); });
   }
 
-  function muteAll() {
-    document.querySelectorAll('video, audio').forEach(el => {
-      el.muted = true;
-      el.volume = 0;
-    });
+  function isAd() {
+    var p = document.querySelector('#movie_player');
+    return p && p.classList.contains('ad-showing');
   }
 
   function clickSkip() {
-    const selectors = [
-      '.ytp-skip-ad-button',
-      '.ytp-ad-skip-button',
-      '.ytp-ad-skip-button-modern',
-      '.ytp-ad-skip-button-slot button',
-      '.ytp-ad-skip-button-container button',
-      'button.ytp-ad-skip-button-modern',
-      '.videoAdUiSkipButton',
-      'button[class*="skip-button"]'
-    ];
-    for (const sel of selectors) {
-      const btn = document.querySelector(sel);
-      if (btn) {
-        btn.click();
-        return true;
-      }
+    var btns = document.querySelectorAll(
+      '.ytp-skip-ad-button, .ytp-ad-skip-button, .ytp-ad-skip-button-modern, ' +
+      'button.ytp-ad-skip-button-modern, .ytp-ad-skip-button-container button'
+    );
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].click();
+      return true;
     }
     return false;
   }
 
   function handleAd() {
-    const player = document.querySelector('#movie_player');
-    if (!player || !player.classList.contains('ad-showing')) return;
-    if (isProcessing) return;
-
-    // Silenciar inmediatamente
-    muteAll();
-    showOverlay();
-
-    // Método 1: Intentar clic en skip
-    if (clickSkip()) {
-      setTimeout(() => {
-        if (!player.classList.contains('ad-showing')) {
-          hideOverlay();
-          restorePlayer();
-        }
-      }, 500);
+    if (!isAd()) {
+      if (overlay) { hideOverlay(); restoreVideo(); }
       return;
     }
 
-    // Método 2: Saltar el video del anuncio al final
-    const video = document.querySelector('video');
-    if (video) {
-      video.muted = true;
-      video.volume = 0;
-      // Intentar saltar al final
-      if (video.duration && isFinite(video.duration) && video.duration > 0) {
-        video.currentTime = video.duration;
-      }
+    var video = document.querySelector('video');
+    if (!video) return;
+
+    // Silenciar
+    video.muted = true;
+    video.volume = 0;
+
+    // Intentar skip
+    if (clickSkip()) {
+      showOverlay('Omitiendo...');
+      return;
     }
 
-    // Método 3: Si después de 1.5s sigue el anuncio, recargar el video
-    isProcessing = true;
-    setTimeout(() => {
-      if (player.classList.contains('ad-showing')) {
-        // Recargar el video - esto salta el anuncio
-        const videoUrl = window.location.href;
-        // Usar la navegación interna de YouTube para recargar sin perder la página
-        const videoId = new URLSearchParams(window.location.search).get('v');
-        if (videoId) {
-          // Navegar al mismo video - YouTube lo carga sin el anuncio anterior
-          window.location.replace(videoUrl);
-        }
-      }
-      isProcessing = false;
-    }, 1500);
+    // Acelerar
+    try { video.playbackRate = 16; } catch(e) {}
+
+    // Saltar al final si es posible
+    if (video.duration && isFinite(video.duration) && video.duration > 0.5) {
+      try { video.currentTime = video.duration - 0.1; } catch(e) {}
+      showOverlay('Saltando anuncio...');
+    } else {
+      showOverlay('Saltando anuncio...');
+    }
   }
 
-  function restorePlayer() {
-    const video = document.querySelector('video');
+  function restoreVideo() {
+    var video = document.querySelector('video');
     if (video) {
       video.playbackRate = 1;
       video.muted = false;
@@ -113,83 +160,24 @@
     }
   }
 
-  function removeOverlayAds() {
-    const selectors = [
-      '.ytp-ad-overlay-container',
-      '.ytp-ad-overlay-slot',
-      '#player-ads',
-      '#masthead-ad',
-      'ytd-ad-slot-renderer',
-      'ytd-banner-promo-renderer',
-      'ytd-statement-banner-renderer',
-      'ytd-in-feed-ad-layout-renderer',
-      'ytd-promoted-sparkles-web-renderer',
-      'ytd-display-ad-renderer',
-      'ytd-promoted-video-renderer',
-      '.ytd-merch-shelf-renderer',
-      'ytd-engagement-panel-section-list-renderer[target-id="engagement-panel-ads"]'
-    ];
-    selectors.forEach(sel => {
-      document.querySelectorAll(sel).forEach(el => el.remove());
+  function removeAds() {
+    var sels = ['#player-ads', '#masthead-ad', 'ytd-ad-slot-renderer', 'ytd-banner-promo-renderer',
+      'ytd-in-feed-ad-layout-renderer', 'ytd-promoted-sparkles-web-renderer',
+      'ytd-display-ad-renderer', '.ytp-ad-overlay-container', 'ytd-promoted-video-renderer'];
+    sels.forEach(function(s) {
+      document.querySelectorAll(s).forEach(function(el) { el.remove(); });
     });
   }
 
-  // Loop principal cada 50ms
-  let wasShowingAd = false;
+  // Loop de backup
+  setInterval(function() {
+    handleAd();
+    removeAds();
+  }, 100);
 
-  setInterval(() => {
-    const player = document.querySelector('#movie_player');
-    const isAd = player && player.classList.contains('ad-showing');
-
-    if (isAd) {
-      wasShowingAd = true;
-      muteAll();
-      handleAd();
-    } else if (wasShowingAd) {
-      wasShowingAd = false;
-      isProcessing = false;
-      hideOverlay();
-      restorePlayer();
-    }
-
-    removeOverlayAds();
-  }, 50);
-
-  // Observer para reaccionar al instante
-  function observePlayer() {
-    const player = document.querySelector('#movie_player');
-    if (!player) {
-      setTimeout(observePlayer, 300);
-      return;
-    }
-
-    new MutationObserver(() => {
-      if (player.classList.contains('ad-showing')) {
-        muteAll();
-        handleAd();
-      } else if (wasShowingAd) {
-        wasShowingAd = false;
-        isProcessing = false;
-        hideOverlay();
-        restorePlayer();
-      }
-    }).observe(player, { attributes: true, attributeFilter: ['class'] });
-
-    new MutationObserver(() => {
-      if (player.classList.contains('ad-showing')) {
-        clickSkip();
-      }
-    }).observe(player, { childList: true, subtree: true });
-  }
-
-  observePlayer();
-
-  // Al cargar la página, si ya hay un anuncio, manejarlo
-  setTimeout(() => {
-    const player = document.querySelector('#movie_player');
-    if (player && player.classList.contains('ad-showing')) {
-      muteAll();
-      handleAd();
-    }
-  }, 500);
+  // Escuchar navegación SPA
+  document.addEventListener('yt-navigate-finish', function() {
+    hideOverlay();
+    restoreVideo();
+  });
 })();
