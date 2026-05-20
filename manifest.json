@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Mi Bloqueador de Anuncios Local",
-  "version": "1.0",
-  "description": "Bloquea scripts de anuncios, banners y rastreadores de forma nativa.",
+  "version": "1.1",
+  "description": "Bloquea scripts de anuncios, banners, rastreadores y video ads de forma nativa.",
   "permissions": [
     "declarativeNetRequest"
   ],
@@ -16,6 +16,23 @@
       "path": "rules.json"
     }]
   },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.youtube.com/*",
+        "*://m.youtube.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icono.png"],
+      "matches": ["*://*.youtube.com/*"]
+    }
+  ],
   "icons": {
     "48": "icono.png",
     "128": "icono.png"
