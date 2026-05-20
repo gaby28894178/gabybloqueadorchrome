@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Mi Bloqueador de Anuncios Local",
+  "version": "1.0",
+  "description": "Bloquea scripts de anuncios, banners y rastreadores de forma nativa.",
+  "permissions": [
+    "declarativeNetRequest"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "declarative_net_request": {
+    "rule_resources": [{
+      "id": "ruleset_anuncios",
+      "enabled": true,
+      "path": "rules.json"
+    }]
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+}
