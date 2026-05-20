@@ -11,8 +11,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       chrome.storage.local.set({ enabled: newState });
       // Activar o desactivar el ruleset
       chrome.declarativeNetRequest.updateEnabledRulesets({
-        enableRulesetIds: newState ? ["ruleset_ads"] : [],
-        disableRulesetIds: newState ? [] : ["ruleset_ads"]
+        enableRulesetIds: newState ? ["ruleset_anuncios"] : [],
+        disableRulesetIds: newState ? [] : ["ruleset_anuncios"]
       });
       sendResponse({ enabled: newState });
     });
